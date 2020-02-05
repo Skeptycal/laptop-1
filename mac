@@ -1,22 +1,57 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # Welcome to the thoughtbot laptop script!
 # Be prepared to turn your laptop (or desktop, no haters here)
 # into an awesome development machine.
 
+# shellcheck disable=SC2039
+# shellcheck disable=SC2059
+
+script_name="$0"
+
+die() {
+  # error trapping and reporting
+  #   if args are set, report them
+  #   else, report $? status
+  ret=$?
+
+  _name="$1"
+  shift
+  _line="$1"
+  shift
+  _message="$*"
+
+  if [ -z "$_name" ]; then
+    if test $ret -ne 0; then
+      printf "%s\n" "$script_name failed: $ret" >&2;
+    else
+      printf "%s\n" "$script_name exiting ..." >&2;
+    fi
+  fi
+  printf "%s\n" "$_name failed on line $_line: $_message" >&2
+}
+trap die EXIT
+
 fancy_echo() {
+  # more xxx output with optional formatting prefix
+  #   $1  - text to output (required);
+  #         becomes optional format if $# has additional args available
+  #   $2+ - additional args
+  #         (presence of these indicates $1 is a format string)
   if [ $# -gt 0 ]; then
     local fmt="$1"; shift
-    # shellcheck disable=SC2059
-    printf "\\n$fmt\\n"
-    printf "$*"
+    printf "\\n${fmt}%s\\n" "$*"
   fi
 }
 
 append_to_zshrc() {
+  # append line and optional blank line to .zshrc if not already present
+  #   $1 - code to append (string: required)
+  #   $2 - boolean [1 | 0] skip additional newline (default 0)
+
   if [ $# -lt 1 ]; then
-    fancy_echo "Usage: append_to_zshrc TEXT [SKIP_NEWLINE] ..."
-    exit 1
+    fancy_echo "Usage: append_to_zshrc TEXT [SKIP_NEWLINE] ..." >&2
+    die "$0" "$LINENO" "Required parameters missing ..."
   else
     local text="$1" zshrc
     local skip_new_line="${2:-0}"
@@ -37,8 +72,37 @@ append_to_zshrc() {
   fi
 }
 
-# shellcheck disable=SC2154
-trap 'ret=$?; test $ret -ne 0 && printf "failed\n\n" >&2; exit $ret' EXIT
+# test
+# append_to_zshrc
+
+die "$0" "$LINENO" "Required 'Homebrew' install has failed ..."
+
+brew_check() {
+  # Check for Homebrew install; install as needed; exit on errors
+  if ! command -v brew 2>/dev/null; then
+    fancy_echo "Installing Homebrew ..."
+    /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+    if ! command -v brew 2>/dev/null; then
+      die "$0" "$LINENO" "Required 'Homebrew' install has failed ..."
+    else
+      append_to_zshrc '# recommended by brew doctor'
+    fi
+  fi
+
+  HOMEBREW_PREFIX="$(brew --prefix >/dev/null 2>&1)"
+  HOMEBREW_PREFIX="${HOMEBREW_PREFIX:-/usr/local}"
+
+  # shell check disable=SC2016
+  append_to_zshrc "export PATH=\"${HOMEBREW_PREFIX}/bin:$PATH\"" 1
+  export PATH="${HOMEBREW_PREFIX}/bin:$PATH"
+
+  if ! [ -d "$HOMEBREW_PREFIX" ]; then
+    sudo mkdir -p "$HOMEBREW_PREFIX"
+    sudo chflags norestricted "$HOMEBREW_PREFIX"
+  fi
+}
+
+# exit
 
 set -e
 
@@ -48,18 +112,10 @@ touch "$HOME/.zshrc"
 
 # shellcheck disable=SC2016
 append_to_zshrc 'export PATH="$HOME/.bin:$PATH"'
+export PATH="$HOME/.bin:$PATH"
 
-HOMEBREW_PREFIX="/usr/local"
-
-if [ -d "$HOMEBREW_PREFIX" ]; then
-  if ! [ -r "$HOMEBREW_PREFIX" ]; then
-    sudo chown -R "$LOGNAME:admin" /usr/local
-  fi
-else
-  sudo mkdir "$HOMEBREW_PREFIX"
-  sudo chflags norestricted "$HOMEBREW_PREFIX"
-  sudo chown -R "$LOGNAME:admin" "$HOMEBREW_PREFIX"
-fi
+fancy_echo "Repairing permissions on Homebrew folder ..."
+sudo chown -R "$(id -un)":admin "$HOMEBREW_PREFIX"
 
 update_shell() {
   local shell_path;
@@ -73,16 +129,9 @@ update_shell() {
   sudo chsh -s "$shell_path" "$USER"
 }
 
-case "$SHELL" in
-  */zsh)
-    if [ "$(command -v zsh)" != '/usr/local/bin/zsh' ] ; then
-      update_shell
-    fi
-    ;;
-  *)
-    update_shell
-    ;;
-esac
+if [ "$(command -v zsh)" != '/usr/local/bin/zsh' ] ; then
+  update_shell
+fi
 
 gem_install_or_update() {
   if gem list "$1" --installed > /dev/null; then
@@ -91,19 +140,6 @@ gem_install_or_update() {
     gem install "$@"
   fi
 }
-
-if ! command -v brew >/dev/null; then
-  fancy_echo "Installing Homebrew ..."
-    curl -fsS \
-      'https://raw.githubusercontent.com/Homebrew/install/master/install' | ruby
-
-    append_to_zshrc '# recommended by brew doctor'
-
-    # shellcheck disable=SC2016
-    append_to_zshrc 'export PATH="/usr/local/bin:$PATH"' 1
-
-    export PATH="/usr/local/bin:$PATH"
-fi
 
 if brew list | grep -Fq brew-cask; then
   fancy_echo "Uninstalling old Homebrew-Cask ..."
@@ -143,6 +179,7 @@ brew "imagemagick"
 # Programming language prerequisites and package managers
 brew "libyaml" # should come after openssl
 brew "coreutils"
+brew "shellcheck"
 brew "yarn"
 cask "gpg-suite"
 
@@ -173,8 +210,8 @@ add_or_update_asdf_plugin() {
   fi
 }
 
-# shellcheck disable=SC1090
-source "$HOME/.asdf/asdf.sh"
+# shellcheck source=/dev/null
+. "$HOME/.asdf/asdf.sh"
 add_or_update_asdf_plugin "ruby" "https://github.com/asdf-vm/asdf-ruby.git"
 add_or_update_asdf_plugin "nodejs" "https://github.com/asdf-vm/asdf-nodejs.git"
 
@@ -201,6 +238,6 @@ install_asdf_language "nodejs"
 
 if [ -f "$HOME/.laptop.local" ]; then
   fancy_echo "Running your customizations from ~/.laptop.local ..."
-  # shellcheck disable=SC1090
+  # shellcheck source=/dev/null
   . "$HOME/.laptop.local"
 fi
